@@ -1,0 +1,445 @@
+KG Lecture VIII
+******************
+SHOW CURRENT USER
+
+
+RETURN gds.version();
+
+CALL gds.list();
+
+RETURN gds.isLicensed();
+
+CALL gds.license.state();
+
+MATCH p = (m)-[r]->(n)
+RETURN *
+
+Those who have not created the Twitter Network
+
+Twitter Network
+*******************
+
+LOAD CSV WITH HEADERS FROM
+"https://raw.githubusercontent.com/tomasonjo/graphs-network-science/main/dataset/twitter/users.csv" as row
+MERGE (u:User{id:row.id})ON CREATE SET u.name = row.name,u.username = row.username,u.registeredAt = datetime(row.createdAt)
+
+LOAD CSV WITH HEADERS FROM
+"https://raw.githubusercontent.com/tomasonjo/graphs-network-science/main/dataset/twitter/followers.csv" as row
+MATCH (s:User{id:row.source})
+MATCH (t:User{id:row.target})
+MERGE (s)-[:FOLLOWS]->(t)
+
+LOAD CSV WITH HEADERS FROM "https://raw.githubusercontent.com/tomasonjo/graphs-network-science/main/dataset/twitter/tweets.csv" as row
+MATCH (a:User{id:row.author})
+MERGE (p:Tweet{id:row.id})
+ON CREATE SET p.text = row.text, p.createdAt = datetime(row.createdAt)
+MERGE (a)-[:PUBLISH]->(p)
+
+LOAD CSV WITH HEADERS FROM
+"https://raw.githubusercontent.com/tomasonjo/graphs-network-science/main/dataset/twitter/retweets.csv" as row
+MATCH (source:Tweet{id:row.source})
+MATCH (target:Tweet{id:row.target})
+MERGE (source)-[:RETWEETS]->(target)
+
+LOAD CSV WITH HEADERS FROM
+"https://raw.githubusercontent.com/tomasonjo/graphs-network-science/main/dataset/twitter/replies.csv" as row
+MATCH (source:Tweet{id:row.source})
+MATCH (target:Tweet{id:row.target})
+MERGE (source)-[:IN_REPLY_TO]->(target)
+
+CALL db.schema.visualization()
+
+
+
+Lecture VIII
+*********************
+
+Listing Graphs
+
+CALL gds.graph.list()
+YIELD graphName, nodeCount, relationshipCount
+RETURN graphName, nodeCount, relationshipCount
+ORDER BY graphName ASC
+
+
+CALL gds.graph.list('follower-network')
+YIELD graphName, degreeDistribution;
+
+
+
+Dropping the named Graph
+
+CALL gds.graph.drop('follower-network')
+
+CALL gds.graph.drop('follower-network') YIELD graphName;
+
+CALL gds.graph.drop('follower-network', false) YIELD graphName;
+
+
+
+Translating an indirect retweet pattern into a direct AMPLIFY relationship
+
+MATCH (s:User)-[:PUBLISH]->()-[:RETWEETS]->()<-[:PUBLISH]-(t:User)
+CREATE (s)-[:AMPLIFY]->(t);
+
+
+Counting the occurrence of the retweet pattern between users
+MATCH (source:User)-[:PUBLISH]->()-[:RETWEETS]->()<-[:PUBLISH]-(target:User)
+RETURN source, target, count(*) AS weight
+LIMIT 10
+
+
+
+
+MATCH (source:User)-[:PUBLISH]->()-[:RETWEETS]->()<-[:PUBLISH]-(target:User)
+WITH source, target, count(*) AS weight
+WITH gds.graph.project(
+'amplify',
+source,
+target,
+{relationshipProperties:{weight:weight}}
+) AS g
+RETURN g.graphName AS graph,
+g.nodeCount AS nodes,
+g.relationshipCount AS rels
+
+Evaluating the out-degree distribution of the inferred retweet amplification
+network
+CALL gds.degree.stats('amplify')
+YIELD centralityDistribution
+
+Returns the users with the top five highest out-degrees
+CALL gds.degree.stream('amplify')
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).username AS user, score
+ORDER BY score DESC
+LIMIT 5
+
+
+
+
+Evaluating the weighted out-degree distribution of the inferred retweet
+amplification network
+
+CALL gds.degree.stats('amplify', {relationshipWeightProperty:'weight'})
+YIELD centralityDistribution
+
+Returns the users with the top five highest weighted out-degrees
+
+CALL gds.degree.stream('amplify',
+{relationshipWeightProperty:'weight'})
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).username AS user, score
+ORDER BY score DESC
+LIMIT 5
+
+
+
+
+
+The node degree centrality algorithm has an orientation parameter
+that allows you to evaluate in-degree, out-degree, or a combination of both. The
+orientation parameter has three possible inputs:
+ NATURAL—Evaluates the out-degree (count of outgoing relationships)
+ REVERSE—Evaluates the in-degree (count of incoming relationships)
+ UNDIRECTED—Evaluates the sum of both the in- and out-degrees
+
+
+Returns the top five users with the highest in-degree
+
+CALL gds.degree.stats('amplify', {orientation:'REVERSE'})
+YIELD centralityDistribution
+
+Returns the users with the top five highest weighted in-degrees
+
+CALL gds.degree.stream('amplify', {orientation:'REVERSE'})
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).username as user, score
+ORDER BY score DESC
+LIMIT 5
+
+Evaluates the weighted in-degree distribution
+
+CALL gds.degree.stats('amplify', {orientation:'REVERSE',
+relationshipWeightProperty:'weight'})
+YIELD centralityDistribution
+
+Returns the users with the top five highest weighted in-degrees
+
+CALL gds.degree.stream('amplify', {orientation:'REVERSE',
+relationshipWeightProperty:'weight'})
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).username as user, score
+ORDER BY score DESC
+LIMIT 5
+
+
+Identifying the most influential content creators
+
+Loads the amplify retweet network as an in-memory graph using
+Cypher projection and excluding self-loops
+
+MATCH (source:User)-[:PUBLISH]->()-[:RETWEETS]->()<-[:PUBLISH]-(target:User)
+WHERE NOT source = target
+WITH source, target, count(*) AS weight
+WITH gds.graph.project(
+'amplify-noselfloops',
+source,
+target,
+{relationshipProperties:{weight:weight}}
+) AS g
+RETURN g.graphName AS graph,
+g.nodeCount AS nodes,
+g.relationshipCount AS rels
+
+
+
+CALL gds.pageRank.stream('amplify-noselfloops',
+{relationshipWeightProperty:'weight'})
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).username AS user, score
+ORDER BY score DESC
+LIMIT 5
+
+
+
+Releasing all the projected graphs from memory
+
+CALL gds.graph.list() YIELD graphName
+CALL gds.graph.drop(graphName) YIELD nodeCount
+RETURN 'dropped ' + graphName AS result
+
+
+Bipartite & Co-occurrence Network
+
+Describing the construction of a hashtag co-occurrence network with a
+Cypher statement
+
+MATCH (s:Tag)<-[:HAS_TAG]-(:Tweet)-[:HAS_TAG]->(t:Tag)
+CREATE (s)-[:CO_OCCURRENCE]->(t);
+
+Extracting hashtags from tweets that are not retweets
+
+MATCH (t:Tweet)
+WHERE NOT EXISTS { (t)-[:RETWEETS]->() }
+WITH t, replace(t.text, '\n', ' ') AS cleanText
+WITH t, split(cleanText, ' ') AS tokens
+WITH t, [el IN tokens WHERE el STARTS WITH "#" |
+toLower(replace(el,",",""))] AS hashtags
+WHERE size(hashtags) > 0
+RETURN hashtags LIMIT 5
+
+replace(string, search, replace)
+split(string, delimiter)
+[element in list WHERE predicate | element]
+
+
+Defining a unique constraint for Tag nodes on the id property
+CREATE CONSTRAINT IF NOT EXISTS FOR (t:Tag) REQUIRE t.id IS UNIQUE;
+
+Extracting hashtags and storing them in the database
+
+MATCH (t:Tweet)
+WHERE NOT EXISTS { (t)-[:RETWEETS]->() }
+WITH t, replace(t.text, '\n', ' ') AS cleanText
+WITH t, split(cleanText, ' ') AS tokens
+WITH t, [el IN tokens WHERE el STARTS WITH "#" |
+toLower(replace(el, ",", " "))] AS hashtags
+WHERE size(hashtags) > 0
+UNWIND hashtags AS tag_id
+MERGE (tag:Tag {id: tag_id})
+MERGE (t)-[:HAS_TAG]->(tag)
+
+
+MATCH p = (m)-[r]->(n)
+RETURN *
+
+CALL db.schema.visualization()
+
+
+Retrieving the top five hashtags by the sum of the combined tweet and
+retweet count
+MATCH (h:Tag)<-[:HAS_TAG]-(t:Tweet)
+OPTIONAL MATCH (t)<-[r:RETWEETS]-()
+RETURN h.id AS hashtag,
+count(distinct t) AS originalTweetsCount,
+count(r) AS retweetCount
+ORDER BY retweetCount + originalTweetsCount DESC
+LIMIT 5
+
+
+
+
+Constructing the co-occurrence network
+
+Retrieving the top five hashtags by the sum of the combined tweet and
+retweet count
+
+Examining the top five most co-occurring pairs of hashtags
+
+MATCH (h1:Tag)<-[:HAS_TAG]-()-[:HAS_TAG]->(h2:Tag)
+WHERE id(h1) < id(h2)
+WITH h1,h2,count(*) AS cooccurrences
+ORDER BY cooccurrences DESC LIMIT 5
+RETURN h1.id AS tag1, h2.id AS tag2, cooccurrences
+
+
+Projects Tweet and Tag nodes and includes reversed HAS_TAG relationships
+
+CALL gds.graph.project(
+'tags',
+['Tweet', 'Tag'],
+{REVERSED_HAS_TAG: {orientation:'REVERSE', type:'HAS_TAG'}});
+
+Evaluating the Jaccard coefficient distribution with default parameters
+
+CALL gds.nodeSimilarity.stats('tags', {similarityMetric: 'JACCARD'})
+YIELD nodesCompared, similarityPairs, similarityDistribution
+
+Using the similarityCutoff parameter to define the similarity score
+threshold
+
+CALL gds.nodeSimilarity.stats('tags',
+{similarityMetric: 'JACCARD', similarityCutoff:0.33})
+YIELD nodesCompared, similarityPairs, similarityDistribution
+
+Mutating the hashtag co-occurrence network to the in-memory graph
+
+CALL gds.nodeSimilarity.mutate('tags',
+{topK:50, similarityCutoff:0.25,
+mutateRelationshipType:'CO_OCCURRENCE',
+mutateProperty:'score',
+similarityMetric: 'JACCARD'})
+YIELD nodesCompared, relationshipsWritten
+
+CALL gds.degree.stats('tags',
+{nodeLabels:['Tag'], relationshipTypes:['CO_OCCURRENCE']})
+YIELD centralityDistribution
+
+
+Executing the label propagation algorithm on the hashtag co-occurrence
+network and storing the results to the in-memory graph
+
+CALL gds.labelPropagation.mutate('tags',
+{nodeLabels:['Tag'], relationshipTypes: ['CO_OCCURRENCE'],
+mutateProperty:'community'})
+YIELD communityCount, communityDistribution;
+
+Writing the mutated in-memory graph node properties to the database
+
+CALL gds.graph.writeNodeProperties('tags', ['community'])
+YIELD propertiesWritten
+
+Inspecting the five largest communities of hashtags
+
+MATCH (t:Tag)
+RETURN t.community AS community,
+count(*) AS communitySize,
+collect(t.id)[..7] AS exampleMembers
+ORDER BY communitySize DESC
+LIMIT 5
+
+Identifying the members that are in the same community as the #nlp hashtag
+MATCH (t:Tag)
+WHERE t.id IN ['#nlp', '#graph']
+WITH distinct t.community AS target_community
+MATCH (o:Tag)
+WHERE o.community = target_community
+RETURN target_community, collect(o.id) as members
+
+
+MATCH (n) detach delete n
+
+
+Knowing your Customer
+
+CALL gds.graph.list() YIELD graphName
+CALL gds.graph.drop(graphName) YIELD nodeCount
+RETURN 'dropped ' + graphName AS result
+
+
+LOAD CSV WITH HEADERS FROM "file:///Amazon.csv" AS row
+CREATE (p:Product { sid: row.id }) SET p.source = "AMZ", p += properties(row) ;
+
+LOAD CSV WITH HEADERS FROM "file:///GoogleProducts.csv" AS row
+CREATE (p:Product { sid: row.id }) SET p.source = "GGL", p += properties(row) ;
+
+
+The preparation phase tokenizes the product name by breaking it into words
+after lowercasing and removing all nonalphanumeric characters from the text
+(replace(tolower(p.name),"[^a-zA-Z0-9]", " "))
+
+CREATE INDEX FOR (w:Word) ON w.txt ;
+
+The preparation phase tokenizes the product name by breaking it into words
+after lowercasing and removing all nonalphanumeric characters from the text
+
+MATCH (p:Product { source : "GGL" })
+UNWIND [x in split(apoc.text.replace(tolower(p.name),"[^a-zA-Z0-9]", " ")," ")
+WHERE x <> "" ] AS txt
+MERGE ( w:Word { txt: txt }) merge (p)-[:includes]->(w) ;
+
+
+
+MATCH (p:Product { source : "AMZ" })
+UNWIND [x in split(apoc.text.replace(tolower(p.title),"[^a-zA-Z0-9]", " ")," ")
+WHERE x <> "" ] AS txt
+MERGE ( w:Word { txt: txt }) merge (p)-[:includes]->(w) ;
+
+
+The resulting graph contains the nodes representing the products that need to be
+deduplicated as well as the ones representing the tokens (the words).
+
+You can now execute a structural similarity algorithm on the graph
+
+The Node Similarity algorithm compares a set of nodes based on the nodes they
+are connected to. Two nodes are considered similar if they share many of the
+same neighbors. In this case, that means sharing words in the product name. The
+algorithm computes pair-wise similarities based on either the Jaccard metric (also
+known as the Jaccard Similarity Score) or the overlap coefficient (also known as the
+Szymkiewicz–Simpson coefficient).
+
+CALL gds.graph.project(
+'identity-sim',
+['Product', 'Word'],
+['includes']
+);
+
+
+The projection is followed by the execution of the algorithm where it is possible to
+set a similarity cutoff threshold (similarityCutoff: 0.8), discarding all cases where
+similarity is not high enough to be acceptable. By default, the gds.nodeSimilarity
+algorithm uses the Jaccard metric, but it is possible to override that and use the
+overlap metric instead (just add the parameter similarityMetric: 'OVERLAP').
+
+CALL gds.nodeSimilarity.stream('identity-sim', { similarityCutoff: 0.8 })
+YIELD node1, node2, similarity
+WITH similarity, gds.util.asNode(node1) AS node1, gds.util.asNode(node2) AS node2
+WHERE node1.source = "GGL" AND node2.source = "AMZ"
+RETURN similarity AS tk_sim,
+apoc.text.jaroWinklerDistance(node1.name, node2.title) AS str_sim,
+node1.name AS Prod1,
+node2.title AS Prod2
+
+An additional column with string similarity score calculated using the Jaro–Winkler distance has been added to show that the token-based approach is more robust than a string-similarity one
+
+Matching using product title
+
+CALL gds.nodeSimilarity.stream('identity-sim', { similarityCutoff: 0.8 })
+YIELD node1, node2, similarity
+WITH similarity, gds.util.asNode(node1) AS node1, gds.util.asNode(node2) AS node2
+WHERE node1.source = "GGL" AND node2.source = "AMZ"
+MERGE (node1)-[:SIMILAR { sim_score : similarity }]->(node2)
+
+
+MATCH p=()-[r:SIMILAR]->() RETURN p LIMIT 25
+
+
+stream :Returns the result of the algorithm as a stream of records.
+
+stats : Returns a single record of summary statistics, but does not write to the Neo4j database.
+
+mutate : Writes the results of the algorithm to the projected graph and returns a single record of summary statistics.
+
+write : Writes the results of the algorithm to the Neo4j database and returns a single record of summary statistics.
+
